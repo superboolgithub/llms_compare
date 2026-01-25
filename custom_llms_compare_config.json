@@ -1,0 +1,66 @@
+{
+  "providers": [
+    {
+      "id": "a0m9qpb",
+      "name": "向量引擎",
+      "baseUrl": "https://api.vectorengine.ai/v1",
+      "apiKeys": [
+        {
+          "id": "gquj3ad",
+          "name": "gpt",
+          "key": "sk-O30OGGysK5XlLlsmBiqJ4ZbUrxHeWjkui30qq57zUwdYHAm9",
+          "models": [
+            {
+              "id": "bh9bfl2",
+              "name": "gpt-5.2-chat-latest",
+              "enabled": true
+            },
+            {
+              "id": "ohh4th3",
+              "name": "gpt-5-mini-2025-08-07",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "id": "7eeah5r",
+          "name": "gemini",
+          "key": "sk-tFuK4msGibGr1O5uXLW2L9P0SMpdPL1YX6Sk2B6Jys2wUgfF",
+          "models": [
+            {
+              "id": "8pw3v7x",
+              "name": "gemini-3-pro-preview",
+              "enabled": true
+            },
+            {
+              "id": "p38srgm",
+              "name": "gemini-2.5-flash",
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sqmtfku",
+      "name": "1分",
+      "baseUrl": "http://103.236.78.40:3000/v1",
+      "apiKeys": [
+        {
+          "id": "rx2nnm2",
+          "name": "claude",
+          "key": "sk-xGw5b66Rr8teTyjrQgo6TJpTChEJJ768dSePZSti7vHJflkM",
+          "models": [
+            {
+              "id": "q2ijlvu",
+              "name": "aws.amazon/claude-opus-4-5:once",
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "searchServices": [],
+  "theme": "dark"
+}
