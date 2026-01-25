@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Custom config (contains API keys)
+custom_llms_compare_config.json
