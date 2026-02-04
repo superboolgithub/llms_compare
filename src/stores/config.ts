@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Provider, ApiKey, Model, AppConfig, SearchService, ApiProtocol } from '../types/config'
+import type { Provider, ApiKey, Model, AppConfig, SearchService } from '../types/config'
 
 const STORAGE_KEY = 'llms_compare_config'
 

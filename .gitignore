@@ -25,3 +25,6 @@ dist-ssr
 
 # Custom config (contains API keys)
 custom_llms_compare_config.json
+*llms_compare_config.json
+log
+
