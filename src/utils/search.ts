@@ -87,6 +87,69 @@ export async function serpApiSearch(
   }
 }
 
+// SearXNG 搜索
+export async function searxngSearch(
+  baseUrl: string,
+  query: string,
+  options?: {
+    maxResults?: number
+    username?: string
+    password?: string
+    proxyUrl?: string  // CORS 代理地址
+  }
+): Promise<SearchResponse> {
+  // 确保 baseUrl 有协议前缀
+  let normalizedUrl = baseUrl.replace(/\/$/, '')
+  if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+    normalizedUrl = `https://${normalizedUrl}`
+  }
+
+  // 构建请求 URL
+  let fetchUrl: string
+  if (options?.proxyUrl) {
+    // 使用 CORS 代理（生产环境）
+    const proxyBase = options.proxyUrl.replace(/\/$/, '')
+    fetchUrl = `${proxyBase}/search?q=${encodeURIComponent(query)}&format=json`
+  } else if (import.meta.env.DEV && normalizedUrl.includes('railwaysearxng-production.up.railway.app')) {
+    // 开发环境使用 Vite 代理
+    fetchUrl = `/api/searxng/search?q=${encodeURIComponent(query)}&format=json`
+  } else {
+    // 直接请求
+    fetchUrl = `${normalizedUrl}/search?q=${encodeURIComponent(query)}&format=json`
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  }
+
+  // 添加 Basic Auth
+  if (options?.username && options?.password) {
+    const auth = btoa(`${options.username}:${options.password}`)
+    headers['Authorization'] = `Basic ${auth}`
+  }
+
+  const response = await fetch(fetchUrl, {
+    method: 'GET',
+    headers
+  })
+
+  if (!response.ok) {
+    throw new Error(`SearXNG search failed: ${response.status}`)
+  }
+
+  const data = await response.json()
+
+  return {
+    query,
+    results: (data.results || []).slice(0, options?.maxResults || 5).map((r: any) => ({
+      title: r.title || '',
+      url: r.url || '',
+      content: r.content || r.snippet || '',
+      score: r.score
+    }))
+  }
+}
+
 // 格式化搜索结果为 LLM 可用的上下文
 export function formatSearchResultsForLLM(results: SearchResult[]): string {
   if (results.length === 0) {

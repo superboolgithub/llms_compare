@@ -14,13 +14,28 @@ const expandedApiKeys = ref<Set<string>>(new Set())
 const newProvider = ref({ name: '', baseUrl: '' })
 const newApiKey = ref<{ [providerId: string]: { name: string; key: string } }>({})
 const newModel = ref<{ [apiKeyId: string]: string }>({})
-const newSearchService = ref({ name: '', type: 'tavily' as SearchService['type'], apiKey: '' })
+const newSearchService = ref({
+  name: '',
+  type: 'tavily' as SearchService['type'],
+  apiKey: '',
+  baseUrl: '',
+  username: '',
+  proxyUrl: ''
+})
 
 // 编辑状态
 const editingProvider = ref<{ id: string; name: string; baseUrl: string } | null>(null)
 const editingApiKey = ref<{ providerId: string; id: string; name: string; key: string } | null>(null)
 const editingModel = ref<{ providerId: string; apiKeyId: string; id: string; name: string } | null>(null)
-const editingSearchService = ref<{ id: string; name: string; type: SearchService['type']; apiKey: string } | null>(null)
+const editingSearchService = ref<{
+  id: string
+  name: string
+  type: SearchService['type']
+  apiKey: string
+  baseUrl: string
+  username: string
+  proxyUrl: string
+} | null>(null)
 
 // 导入导出
 const importText = ref('')
@@ -98,13 +113,26 @@ function disableAllModels(providerId: string, apiKeyId: string) {
 }
 
 function addSearchService() {
-  if (newSearchService.value.name && newSearchService.value.apiKey) {
-    configStore.addSearchService(
+  // SearXNG 只需要 name 和 baseUrl，其他类型需要 apiKey
+  const isSearxng = newSearchService.value.type === 'searxng'
+  const isValid = newSearchService.value.name &&
+    (isSearxng ? newSearchService.value.baseUrl : newSearchService.value.apiKey)
+
+  if (isValid) {
+    const service = configStore.addSearchService(
       newSearchService.value.name,
       newSearchService.value.type,
-      newSearchService.value.apiKey
+      newSearchService.value.apiKey || '',
+      newSearchService.value.baseUrl || undefined
     )
-    newSearchService.value = { name: '', type: 'tavily', apiKey: '' }
+    // 如果是 SearXNG，还需要设置 username 和 proxyUrl
+    if (isSearxng) {
+      configStore.updateSearchService(service.id, {
+        username: newSearchService.value.username || undefined,
+        proxyUrl: newSearchService.value.proxyUrl || undefined
+      })
+    }
+    newSearchService.value = { name: '', type: 'tavily', apiKey: '', baseUrl: '', username: '', proxyUrl: '' }
   }
 }
 
@@ -165,16 +193,31 @@ function cancelEditModel() {
 }
 
 // 编辑 SearchService
-function startEditSearchService(service: { id: string; name: string; type: SearchService['type']; apiKey: string }) {
-  editingSearchService.value = { ...service }
+function startEditSearchService(service: SearchService) {
+  editingSearchService.value = {
+    id: service.id,
+    name: service.name,
+    type: service.type,
+    apiKey: service.apiKey,
+    baseUrl: service.baseUrl || '',
+    username: service.username || '',
+    proxyUrl: service.proxyUrl || ''
+  }
 }
 
 function saveEditSearchService() {
-  if (editingSearchService.value && editingSearchService.value.name && editingSearchService.value.apiKey) {
+  if (editingSearchService.value && editingSearchService.value.name) {
+    const isSearxng = editingSearchService.value.type === 'searxng'
+    // SearXNG 不需要 apiKey，其他类型需要
+    if (!isSearxng && !editingSearchService.value.apiKey) return
+
     configStore.updateSearchService(editingSearchService.value.id, {
       name: editingSearchService.value.name,
       type: editingSearchService.value.type,
-      apiKey: editingSearchService.value.apiKey
+      apiKey: editingSearchService.value.apiKey,
+      baseUrl: editingSearchService.value.baseUrl || undefined,
+      username: editingSearchService.value.username || undefined,
+      proxyUrl: editingSearchService.value.proxyUrl || undefined
     })
     editingSearchService.value = null
   }
@@ -434,13 +477,24 @@ function maskKey(key: string): string {
 
     <!-- 搜索服务配置 -->
     <div v-if="activeTab === 'search'" class="tab-content">
-      <div class="add-form">
+      <div class="add-form search-add-form">
         <input v-model="newSearchService.name" placeholder="服务名称" class="input-name" />
         <select v-model="newSearchService.type" class="input-select">
           <option value="tavily">Tavily</option>
           <option value="serpapi">SerpAPI</option>
+          <option value="searxng">SearXNG</option>
         </select>
-        <input v-model="newSearchService.apiKey" placeholder="API Key" type="password" class="input-key" />
+        <!-- SearXNG 特有字段 -->
+        <template v-if="newSearchService.type === 'searxng'">
+          <input v-model="newSearchService.baseUrl" placeholder="服务地址 (如: https://xxx.up.railway.app)" class="input-url" />
+          <input v-model="newSearchService.proxyUrl" placeholder="CORS代理 (可选，生产环境用)" class="input-url" />
+          <input v-model="newSearchService.username" placeholder="用户名 (可选)" class="input-sm" />
+          <input v-model="newSearchService.apiKey" placeholder="密码 (可选)" type="password" class="input-sm" />
+        </template>
+        <!-- Tavily/SerpAPI -->
+        <template v-else>
+          <input v-model="newSearchService.apiKey" placeholder="API Key" type="password" class="input-key" />
+        </template>
         <button @click="addSearchService" class="btn btn-primary">添加搜索服务</button>
       </div>
 
@@ -448,8 +502,9 @@ function maskKey(key: string): string {
         <div v-if="configStore.searchServices.length === 0" class="empty-state">
           <p>暂无搜索服务配置</p>
           <p class="hint">支持的搜索服务：</p>
-          <code>Tavily: https://tavily.com (推荐)</code><br>
-          <code>SerpAPI: https://serpapi.com</code>
+          <code>Tavily: https://tavily.com (推荐，需要 API Key)</code><br>
+          <code>SerpAPI: https://serpapi.com (需要 API Key)</code><br>
+          <code>SearXNG: 自部署搜索引擎 (需要服务地址和认证信息)</code>
         </div>
 
         <div
@@ -469,13 +524,41 @@ function maskKey(key: string): string {
               <select v-model="editingSearchService.type" class="input-select-sm">
                 <option value="tavily">Tavily</option>
                 <option value="serpapi">SerpAPI</option>
+                <option value="searxng">SearXNG</option>
               </select>
-              <input
-                v-model="editingSearchService.apiKey"
-                placeholder="API Key"
-                type="password"
-                class="input-sm input-key"
-              />
+              <!-- SearXNG 特有字段 -->
+              <template v-if="editingSearchService.type === 'searxng'">
+                <input
+                  v-model="editingSearchService.baseUrl"
+                  placeholder="服务地址"
+                  class="input-sm input-url"
+                />
+                <input
+                  v-model="editingSearchService.proxyUrl"
+                  placeholder="CORS代理 (可选)"
+                  class="input-sm input-url"
+                />
+                <input
+                  v-model="editingSearchService.username"
+                  placeholder="用户名 (可选)"
+                  class="input-sm"
+                />
+                <input
+                  v-model="editingSearchService.apiKey"
+                  placeholder="密码 (可选)"
+                  type="password"
+                  class="input-sm"
+                />
+              </template>
+              <!-- Tavily/SerpAPI -->
+              <template v-else>
+                <input
+                  v-model="editingSearchService.apiKey"
+                  placeholder="API Key"
+                  type="password"
+                  class="input-sm input-key"
+                />
+              </template>
             </div>
             <div class="service-actions">
               <button @click="saveEditSearchService" class="btn btn-sm btn-primary">保存</button>
@@ -488,7 +571,9 @@ function maskKey(key: string): string {
               <span class="service-icon">🔍</span>
               <span class="service-name">{{ service.name }}</span>
               <span class="service-type">{{ service.type }}</span>
-              <span class="service-key mono">{{ maskKey(service.apiKey) }}</span>
+              <span v-if="service.type === 'searxng' && service.baseUrl" class="service-url">{{ service.baseUrl }}</span>
+              <span v-if="service.type === 'searxng'" class="service-key mono">{{ service.username }}:****</span>
+              <span v-else class="service-key mono">{{ maskKey(service.apiKey) }}</span>
             </div>
             <div class="service-actions">
               <button
@@ -980,6 +1065,22 @@ function maskKey(key: string): string {
   padding: 4px 10px;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 6px;
+}
+
+.service-url {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-add-form {
+  flex-wrap: wrap;
 }
 
 .service-actions {

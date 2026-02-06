@@ -27,9 +27,11 @@ export interface Provider {
 export interface SearchService {
   id: string
   name: string
-  type: 'tavily' | 'serpapi' | 'custom'
-  apiKey: string
-  baseUrl?: string // 自定义服务时使用
+  type: 'tavily' | 'serpapi' | 'searxng'
+  apiKey: string           // Tavily/SerpAPI 的 API Key，SearXNG 的 Basic Auth 密码
+  baseUrl?: string         // SearXNG 的服务地址
+  proxyUrl?: string        // CORS 代理地址（用于生产环境）
+  username?: string        // SearXNG 的 Basic Auth 用户名
   enabled: boolean
 }
 
@@ -60,9 +62,17 @@ export interface ModelSelection {
   modelId: string
 }
 
+// 临时 API 配置
+export interface TempApiConfig {
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+
 export interface ComparePanel {
   id: string
   selection: ModelSelection | null
+  tempApi?: TempApiConfig  // 临时 API 配置
   messages: Message[]
   streaming: boolean
 }

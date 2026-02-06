@@ -2,10 +2,11 @@
 import { ref, computed, nextTick } from 'vue'
 import { useConfigStore } from '../stores/config'
 import { useChatStore } from '../stores/chat'
-import { streamChat } from '../utils/api'
-import { tavilySearch, serpApiSearch, formatSearchResultsForLLM, type SearchResult } from '../utils/search'
+import { streamChat, chatWithTools, searchTool } from '../utils/api'
+import { tavilySearch, serpApiSearch, searxngSearch, formatSearchResultsForLLM, type SearchResult } from '../utils/search'
 import { marked } from 'marked'
-import type { ComparePanel } from '../types/config'
+import type { ComparePanel, SearchService } from '../types/config'
+import SettingsView from './SettingsView.vue'
 
 const configStore = useConfigStore()
 const chatStore = useChatStore()
@@ -28,8 +29,22 @@ const panelAutoScroll = ref<Map<string, boolean>>(new Map())
 // 搜索功能开关
 const searchEnabled = ref(false)
 
-// 搜索状态
-const isSearching = ref(false)
+// 配置弹窗显示状态
+const showSettings = ref(false)
+
+// 选中的搜索服务 ID
+const selectedSearchServiceId = ref<string>('')
+
+// 获取所有搜索服务
+const searchServices = computed(() => configStore.searchServices || [])
+
+// 当前选中的搜索服务
+const currentSearchService = computed((): SearchService | undefined => {
+  if (!selectedSearchServiceId.value) {
+    return configStore.enabledSearchService
+  }
+  return searchServices.value.find((s: SearchService) => s.id === selectedSearchServiceId.value)
+})
 
 // 获取面板的模型信息
 function getPanelModel(panel: ComparePanel) {
@@ -111,11 +126,19 @@ function selectModel(panelId: string, providerId: string, apiKeyId: string, mode
 
 // 执行搜索
 async function performSearch(query: string): Promise<SearchResult[]> {
-  const searchService = configStore.enabledSearchService
-  if (!searchService) return []
+  console.log('[Search] selectedSearchServiceId:', selectedSearchServiceId.value)
+  console.log('[Search] searchServices:', searchServices.value.map(s => ({ id: s.id, name: s.name, type: s.type })))
+
+  const searchService = currentSearchService.value
+  if (!searchService) {
+    console.log('[Search] No search service configured')
+    return []
+  }
 
   console.log('[Search] Query:', query)
   console.log('[Search] Service:', searchService.type, searchService.name)
+  console.log('[Search] BaseUrl:', searchService.baseUrl)
+  console.log('[Search] Full service config:', JSON.stringify(searchService))
 
   try {
     let response
@@ -123,6 +146,13 @@ async function performSearch(query: string): Promise<SearchResult[]> {
       response = await tavilySearch(searchService.apiKey, query, { maxResults: 5, searchDepth: 'advanced' })
     } else if (searchService.type === 'serpapi') {
       response = await serpApiSearch(searchService.apiKey, query, { maxResults: 5 })
+    } else if (searchService.type === 'searxng') {
+      response = await searxngSearch(searchService.baseUrl || '', query, {
+        maxResults: 5,
+        username: searchService.username,
+        password: searchService.apiKey,
+        proxyUrl: searchService.proxyUrl
+      })
     } else {
       return []
     }
@@ -135,7 +165,10 @@ async function performSearch(query: string): Promise<SearchResult[]> {
 }
 
 // 是否有可用的搜索服务
-const hasSearchService = computed(() => !!configStore.enabledSearchService)
+const hasSearchService = computed(() => searchServices.value.length > 0)
+
+// 搜索状态映射（每个面板独立）
+const panelSearchStatus = ref<Map<string, string>>(new Map())
 
 // 发送消息到所有面板
 async function sendToAll() {
@@ -144,40 +177,116 @@ async function sendToAll() {
 
   inputText.value = ''
 
-  // 如果启用了搜索，先执行搜索
-  let searchContext = ''
-  if (searchEnabled.value && hasSearchService.value) {
-    isSearching.value = true
-    try {
-      const results = await performSearch(text)
-      if (results.length > 0) {
-        searchContext = formatSearchResultsForLLM(results)
-      }
-    } finally {
-      isSearching.value = false
-    }
-  }
-
-  // 并行发送到所有已配置的面板
+  // 并行发送到所有已配置的面板（每个面板独立决定是否搜索）
   const promises = panels.value
-    .filter(panel => panel.selection && !panel.streaming)
-    .map(panel => sendToPanel(panel, text, searchContext))
+    .filter(panel => canPanelSend(panel) && !panel.streaming)
+    .map(panel => sendToPanel(panel, text))
 
   await Promise.all(promises)
 }
 
-// 发送消息到单个面板
-async function sendToPanel(panel: ComparePanel, text: string, searchContext: string = '') {
-  const modelInfo = getPanelModel(panel)
-  if (!modelInfo) return
+// 发送消息到单个面板（支持 LLM 决策搜索）
+async function sendToPanel(panel: ComparePanel, text: string) {
+  // 获取 API 配置（优先使用临时配置）
+  let baseUrl: string
+  let apiKey: string
+  let modelName: string
+  let protocol: 'openai' | 'anthropic' | 'gemini' = 'openai'
 
-  const { provider, apiKey, model } = modelInfo
+  if (panel.tempApi) {
+    baseUrl = panel.tempApi.baseUrl
+    apiKey = panel.tempApi.apiKey
+    modelName = panel.tempApi.model
+  } else {
+    const modelInfo = getPanelModel(panel)
+    if (!modelInfo) return
+    baseUrl = modelInfo.provider.baseUrl
+    apiKey = modelInfo.apiKey.key
+    modelName = modelInfo.model.name
+    protocol = modelInfo.model.protocol || 'openai'
+  }
 
   // 添加用户消息
   chatStore.addComparePanelMessage(panel.id, { role: 'user', content: text })
 
   // 重置滚动状态
   panelAutoScroll.value.set(panel.id, true)
+  smartScrollPanel(panel.id)
+
+  // 如果启用了搜索且有搜索服务，使用 Tool Use 让 LLM 决定是否搜索
+  let searchContext = ''
+  console.log(`[Panel ${panel.id}] Search enabled: ${searchEnabled.value}, hasSearchService: ${hasSearchService.value}, protocol: ${protocol}`)
+
+  if (searchEnabled.value && hasSearchService.value) {
+    // 对于支持 Tool Use 的协议，让 LLM 决定是否搜索
+    if (protocol === 'openai' || protocol === 'anthropic') {
+      try {
+        panelSearchStatus.value.set(panel.id, '正在分析是否需要搜索...')
+
+        // 构建消息，让 LLM 判断是否需要搜索
+        const messagesForToolUse = [
+          ...panel.messages.slice(0, -1), // 不包括刚添加的用户消息（因为还没在 store 里）
+          { role: 'user' as const, content: text }
+        ]
+
+        console.log(`[Panel ${panel.id}] Calling chatWithTools...`)
+        const toolResult = await chatWithTools(
+          baseUrl,
+          apiKey,
+          modelName,
+          messagesForToolUse,
+          [searchTool],
+          protocol
+        )
+        console.log(`[Panel ${panel.id}] Tool result:`, JSON.stringify(toolResult))
+
+        // 检查是否需要搜索
+        if (toolResult.toolCalls && toolResult.toolCalls.length > 0) {
+          for (const toolCall of toolResult.toolCalls) {
+            if (toolCall.function.name === 'web_search') {
+              const args = JSON.parse(toolCall.function.arguments)
+              const searchQuery = args.query
+
+              panelSearchStatus.value.set(panel.id, `搜索: ${searchQuery}`)
+              console.log(`[Panel ${panel.id}] LLM decided to search:`, searchQuery)
+
+              const results = await performSearch(searchQuery)
+              console.log(`[Panel ${panel.id}] Search results count:`, results.length)
+              if (results.length > 0) {
+                searchContext = formatSearchResultsForLLM(results)
+                console.log(`[Panel ${panel.id}] Formatted searchContext length:`, searchContext.length)
+              }
+            }
+          }
+        } else {
+          console.log(`[Panel ${panel.id}] LLM decided not to search, toolCalls:`, toolResult.toolCalls)
+        }
+      } catch (error) {
+        console.error(`[Panel ${panel.id}] Tool use failed, falling back to direct search:`, error)
+        // Tool use 失败时，回退到直接搜索（用用户原始问题）
+        panelSearchStatus.value.set(panel.id, `搜索: ${text}`)
+        const results = await performSearch(text)
+        console.log(`[Panel ${panel.id}] Fallback search results count:`, results.length)
+        if (results.length > 0) {
+          searchContext = formatSearchResultsForLLM(results)
+          console.log(`[Panel ${panel.id}] Fallback searchContext length:`, searchContext.length)
+        }
+      } finally {
+        panelSearchStatus.value.delete(panel.id)
+      }
+    } else {
+      // 对于不支持 Tool Use 的协议（如 Gemini），直接搜索
+      console.log(`[Panel ${panel.id}] Protocol ${protocol} doesn't support Tool Use, using direct search`)
+      panelSearchStatus.value.set(panel.id, `搜索: ${text}`)
+      const results = await performSearch(text)
+      console.log(`[Panel ${panel.id}] Direct search results count:`, results.length)
+      if (results.length > 0) {
+        searchContext = formatSearchResultsForLLM(results)
+        console.log(`[Panel ${panel.id}] Direct searchContext length:`, searchContext.length)
+      }
+      panelSearchStatus.value.delete(panel.id)
+    }
+  }
   smartScrollPanel(panel.id)
 
   // 开始流式响应
@@ -190,18 +299,25 @@ async function sendToPanel(panel: ComparePanel, text: string, searchContext: str
 
   // 构建消息列表，如果有搜索结果则添加到系统消息中
   const messagesToSend = [...panel.messages.slice(0, -1)]
+
+  console.log(`[Panel ${panel.id}] searchContext length:`, searchContext.length)
+  console.log(`[Panel ${panel.id}] searchContext:`, searchContext.substring(0, 200))
+
   if (searchContext) {
     // 在消息开头添加搜索上下文作为系统消息
     messagesToSend.unshift({
       role: 'system',
       content: `以下是与用户问题相关的搜索结果，请参考这些信息来回答问题：\n\n${searchContext}\n\n请基于以上搜索结果和你的知识来回答用户的问题。如果搜索结果与问题相关，请引用相关信息。`
     })
+    console.log(`[Panel ${panel.id}] Added search context to messages`)
   }
 
+  console.log(`[Panel ${panel.id}] Final messages to send:`, messagesToSend.length, 'messages')
+
   await streamChat(
-    provider.baseUrl,
-    apiKey.key,
-    model.name,
+    baseUrl,
+    apiKey,
+    modelName,
     messagesToSend,
     {
       onChunk: (chunk) => {
@@ -222,7 +338,7 @@ async function sendToPanel(panel: ComparePanel, text: string, searchContext: str
       }
     },
     controller.signal,
-    model.protocol || 'openai'
+    protocol
   )
 }
 
@@ -269,6 +385,39 @@ function getPanelColor(index: number) {
   const colors = ['indigo', 'violet', 'sky', 'emerald', 'rose']
   return colors[index % colors.length]
 }
+
+// 临时 API 配置
+interface TempApiConfig {
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+const tempApiConfigs = ref<Map<string, TempApiConfig>>(new Map())
+const showTempInput = ref<Map<string, boolean>>(new Map())
+
+// 切换临时输入显示
+function toggleTempInput(panelId: string) {
+  const current = showTempInput.value.get(panelId) || false
+  showTempInput.value.set(panelId, !current)
+  if (!tempApiConfigs.value.has(panelId)) {
+    tempApiConfigs.value.set(panelId, { baseUrl: '', apiKey: '', model: '' })
+  }
+}
+
+// 使用临时 API
+function useTempApi(panelId: string) {
+  const config = tempApiConfigs.value.get(panelId)
+  if (!config?.baseUrl || !config?.apiKey || !config?.model) return
+
+  // 设置为临时模式
+  chatStore.setComparePanelTempApi(panelId, config)
+  showTempInput.value.set(panelId, false)
+}
+
+// 检查面板是否可以发送
+function canPanelSend(panel: ComparePanel): boolean {
+  return !!(panel.selection || panel.tempApi)
+}
 </script>
 
 <template>
@@ -276,33 +425,13 @@ function getPanelColor(index: number) {
     <!-- 顶部工具栏 -->
     <div class="toolbar">
       <div class="toolbar-left">
-        <div class="title-group">
-          <span class="title">对话比较</span>
-          <span v-if="!isSinglePanel" class="panel-count">
-            <span class="count-number">{{ panels.length }}</span>
-            <span class="count-label">个模型</span>
-          </span>
-        </div>
+        <span class="title">LLM Compare</span>
+        <span v-if="!isSinglePanel" class="panel-count">{{ panels.length }}</span>
       </div>
       <div class="toolbar-right">
-        <button
-          v-if="hasSearchService"
-          @click="searchEnabled = !searchEnabled"
-          class="btn btn-search"
-          :class="{ active: searchEnabled }"
-          :title="searchEnabled ? '点击关闭联网搜索' : '点击开启联网搜索'"
-        >
-          <span class="btn-icon">🔍</span>
-          <span>{{ searchEnabled ? '搜索已开启' : '联网搜索' }}</span>
-        </button>
-        <button @click="addPanel" class="btn btn-add">
-          <span class="btn-icon">+</span>
-          <span>添加模型</span>
-        </button>
-        <button @click="clearAll" class="btn" :disabled="anyStreaming">
-          <span class="btn-icon">🗑️</span>
-          <span>清空全部</span>
-        </button>
+        <button @click="addPanel" class="btn btn-sm">+ 添加</button>
+        <button @click="clearAll" class="btn btn-sm" :disabled="anyStreaming">清空</button>
+        <button @click="showSettings = true" class="btn btn-sm btn-settings" title="设置">⚙️</button>
       </div>
     </div>
 
@@ -317,48 +446,84 @@ function getPanelColor(index: number) {
         <!-- 面板头部 -->
         <div class="panel-header">
           <div class="panel-indicator" :class="`indicator-${getPanelColor(index)}`"></div>
-          <select
-            class="model-select"
-            :value="panel.selection ? `${panel.selection.providerId}|${panel.selection.apiKeyId}|${panel.selection.modelId}` : ''"
-            @change="(e) => {
-              const parts = (e.target as HTMLSelectElement).value.split('|')
-              if (parts[0] && parts[1] && parts[2]) selectModel(panel.id, parts[0], parts[1], parts[2])
-            }"
-          >
-            <option value="">选择模型...</option>
-            <optgroup
-              v-for="provider in configStore.providers"
-              :key="provider.id"
-              :label="provider.name"
+
+          <!-- 模型选择或临时输入 -->
+          <div class="model-selector">
+            <select
+              v-if="!showTempInput.get(panel.id)"
+              class="model-select"
+              :value="panel.selection ? `${panel.selection.providerId}|${panel.selection.apiKeyId}|${panel.selection.modelId}` : (panel.tempApi ? 'temp' : '')"
+              @change="(e) => {
+                const val = (e.target as HTMLSelectElement).value
+                if (val === 'temp') return
+                const parts = val.split('|')
+                if (parts[0] && parts[1] && parts[2]) {
+                  chatStore.clearComparePanelTempApi(panel.id)
+                  selectModel(panel.id, parts[0], parts[1], parts[2])
+                }
+              }"
             >
-              <template v-for="apiKey in provider.apiKeys" :key="apiKey.id">
-                <option
-                  v-for="model in apiKey.models.filter(m => m.enabled)"
-                  :key="model.id"
-                  :value="`${provider.id}|${apiKey.id}|${model.id}`"
-                >
-                  {{ apiKey.name }} / {{ model.name }}
-                </option>
-              </template>
-            </optgroup>
-          </select>
+              <option value="">选择模型...</option>
+              <option v-if="panel.tempApi" value="temp">临时: {{ panel.tempApi.model }}</option>
+              <optgroup
+                v-for="provider in configStore.providers"
+                :key="provider.id"
+                :label="provider.name"
+              >
+                <template v-for="apiKey in provider.apiKeys" :key="apiKey.id">
+                  <option
+                    v-for="model in apiKey.models.filter(m => m.enabled)"
+                    :key="model.id"
+                    :value="`${provider.id}|${apiKey.id}|${model.id}`"
+                  >
+                    {{ apiKey.name }} / {{ model.name }}
+                  </option>
+                </template>
+              </optgroup>
+            </select>
+
+            <!-- 临时 API 输入 -->
+            <div v-if="showTempInput.get(panel.id)" class="temp-api-form">
+              <input
+                v-model="tempApiConfigs.get(panel.id)!.baseUrl"
+                placeholder="Base URL"
+                class="temp-input"
+              />
+              <input
+                v-model="tempApiConfigs.get(panel.id)!.apiKey"
+                placeholder="API Key"
+                type="password"
+                class="temp-input"
+              />
+              <input
+                v-model="tempApiConfigs.get(panel.id)!.model"
+                placeholder="Model"
+                class="temp-input"
+              />
+              <button @click="useTempApi(panel.id)" class="btn btn-xs btn-primary">确定</button>
+            </div>
+
+            <button
+              @click="toggleTempInput(panel.id)"
+              class="btn btn-xs btn-temp"
+              :title="showTempInput.get(panel.id) ? '取消' : '临时API'"
+            >
+              {{ showTempInput.get(panel.id) ? '×' : '⚡' }}
+            </button>
+          </div>
+
           <div class="panel-actions">
             <button
               v-if="panel.streaming"
               @click="stopPanel(panel.id)"
               class="btn btn-xs btn-stop"
-            >
-              <span class="stop-icon">■</span>
-              停止
-            </button>
-            <button @click="clearPanel(panel.id)" class="btn btn-xs btn-ghost">清空</button>
+            >■</button>
+            <button @click="clearPanel(panel.id)" class="btn btn-xs btn-ghost">清</button>
             <button
               v-if="panels.length > 1"
               @click="removePanel(panel.id)"
               class="btn btn-xs btn-close"
-            >
-              ×
-            </button>
+            >×</button>
           </div>
         </div>
 
@@ -368,20 +533,19 @@ function getPanelColor(index: number) {
           :ref="(el) => setPanelRef(panel.id, el as HTMLDivElement)"
           @scroll="handlePanelScroll(panel.id)"
         >
-          <div v-if="!panel.selection" class="empty-panel">
+          <div v-if="!canPanelSend(panel)" class="empty-panel">
             <div class="empty-icon">🤖</div>
-            <div class="empty-text">请选择模型</div>
+            <div class="empty-text">选择模型或输入临时API</div>
           </div>
           <div v-else-if="panel.messages.length === 0" class="empty-panel">
             <div class="empty-icon">💬</div>
-            <div class="empty-text">开始对话...</div>
+            <div class="empty-text">开始对话</div>
           </div>
           <div
             v-for="(msg, msgIndex) in panel.messages"
             :key="msgIndex"
             class="message"
             :class="msg.role"
-            :style="{ animationDelay: `${msgIndex * 0.05}s` }"
           >
             <div class="message-avatar">
               {{ msg.role === 'user' ? '👤' : '🤖' }}
@@ -390,6 +554,10 @@ function getPanelColor(index: number) {
               class="message-content"
               v-html="msg.role === 'assistant' ? renderMarkdown(msg.content) : msg.content"
             ></div>
+          </div>
+          <div v-if="panelSearchStatus.get(panel.id)" class="panel-search-status">
+            <span class="search-spinner"></span>
+            <span>{{ panelSearchStatus.get(panel.id) }}</span>
           </div>
           <div v-if="panel.streaming" class="streaming-indicator">
             <span class="dot"></span>
@@ -405,31 +573,57 @@ function getPanelColor(index: number) {
 
     <!-- 输入区域 -->
     <div class="input-area">
-      <!-- 搜索状态指示 -->
-      <div v-if="isSearching" class="search-status">
-        <span class="search-spinner"></span>
-        <span>正在搜索相关信息...</span>
-      </div>
-      <div v-else-if="searchEnabled && hasSearchService" class="search-status search-enabled">
-        <span>🔍</span>
-        <span>联网搜索已开启 - 将自动搜索相关信息</span>
-      </div>
       <div class="input-container">
         <textarea
           v-model="inputText"
-          :placeholder="isSinglePanel ? '输入消息... (Enter 发送)' : '输入消息，同时发送到所有面板... (Enter 发送)'"
+          placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
           @keydown="handleKeydown"
-          :disabled="anyStreaming || isSearching || panels.every(p => !p.selection)"
-          rows="3"
+          :disabled="anyStreaming || panels.every(p => !canPanelSend(p))"
+          rows="2"
         ></textarea>
+
+        <!-- 搜索按钮组 -->
+        <div class="search-toggle" v-if="hasSearchService">
+          <button
+            @click="searchEnabled = !searchEnabled"
+            class="btn btn-search-icon"
+            :class="{ active: searchEnabled }"
+            :title="searchEnabled ? '关闭智能搜索' : '开启智能搜索'"
+          >
+            🌐
+          </button>
+          <select
+            v-if="searchEnabled && searchServices.length > 1"
+            v-model="selectedSearchServiceId"
+            class="search-select"
+          >
+            <option value="">默认</option>
+            <option v-for="s in searchServices" :key="s.id" :value="s.id">
+              {{ s.name }}
+            </option>
+          </select>
+        </div>
+
         <button
           @click="sendToAll"
           class="btn btn-send"
-          :disabled="anyStreaming || isSearching || !inputText.trim() || panels.every(p => !p.selection)"
+          :disabled="anyStreaming || !inputText.trim() || panels.every(p => !canPanelSend(p))"
         >
           <span class="send-icon">↑</span>
-          <span class="send-text">{{ isSinglePanel ? '发送' : '发送到全部' }}</span>
         </button>
+      </div>
+    </div>
+
+    <!-- 设置弹窗 -->
+    <div v-if="showSettings" class="settings-overlay" @click.self="showSettings = false">
+      <div class="settings-modal">
+        <div class="settings-header">
+          <h2>设置</h2>
+          <button @click="showSettings = false" class="btn-close-modal">×</button>
+        </div>
+        <div class="settings-content">
+          <SettingsView />
+        </div>
       </div>
     </div>
   </div>
@@ -443,21 +637,22 @@ function getPanelColor(index: number) {
   background: var(--bg-primary);
 }
 
-/* ===== 工具栏 ===== */
+/* ===== 工具栏 - 紧凑版 ===== */
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 24px;
+  padding: 8px 16px;
   background: var(--glass-bg);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0;
 }
 
 .toolbar-left {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 12px;
 }
 
 .title-group {
@@ -468,7 +663,7 @@ function getPanelColor(index: number) {
 
 .title {
   font-weight: 600;
-  font-size: 17px;
+  font-size: 14px;
   color: var(--text-primary);
 }
 
@@ -476,10 +671,12 @@ function getPanelColor(index: number) {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 12px;
+  padding: 2px 8px;
   background: var(--gradient-subtle);
-  border-radius: 20px;
+  border-radius: 12px;
   border: 1px solid var(--border-hover);
+  font-size: 12px;
+  color: var(--accent-violet);
 }
 
 .count-number {
@@ -495,7 +692,7 @@ function getPanelColor(index: number) {
 
 .toolbar-right {
   display: flex;
-  gap: 10px;
+  gap: 6px;
 }
 
 .btn-add {
@@ -560,15 +757,16 @@ function getPanelColor(index: number) {
 .panel-emerald .panel-header { border-left: 3px solid #10b981; }
 .panel-rose .panel-header { border-left: 3px solid #f43f5e; }
 
-/* ===== 面板头部 ===== */
+/* ===== 面板头部 - 紧凑版 ===== */
 .panel-header {
   display: flex;
   align-items: center;
-  padding: 12px 16px;
+  padding: 6px 12px;
   background: var(--glass-bg);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--glass-border);
-  gap: 12px;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .panel-indicator {
@@ -585,12 +783,12 @@ function getPanelColor(index: number) {
 
 .model-select {
   flex: 1;
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--bg-secondary);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 12px;
   font-family: var(--font-sans);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -603,7 +801,69 @@ function getPanelColor(index: number) {
 .model-select:focus {
   outline: none;
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px var(--primary-light);
+  box-shadow: 0 0 0 2px var(--primary-light);
+}
+
+.model-selector {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ===== 临时 API 表单 ===== */
+.temp-api-form {
+  flex: 1;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.temp-input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 11px;
+  min-width: 60px;
+}
+
+.temp-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+.btn-temp {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.btn-temp:hover {
+  background: var(--accent-sky);
+  color: white;
+  border-color: var(--accent-sky);
+}
+
+.btn-xs {
+  padding: 4px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.btn-primary {
+  background: var(--gradient-primary);
+  border: none;
+  color: white;
 }
 
 .panel-actions {
@@ -781,6 +1041,32 @@ function getPanelColor(index: number) {
 }
 
 /* ===== 流式指示器 ===== */
+.panel-search-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  margin: 8px 16px;
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--accent-sky);
+}
+
+.search-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(56, 189, 248, 0.3);
+  border-top-color: var(--accent-sky);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .streaming-indicator {
   display: flex;
   gap: 6px;
@@ -833,50 +1119,17 @@ function getPanelColor(index: number) {
 
 /* ===== 输入区域 ===== */
 .input-area {
-  padding: 18px 24px;
+  padding: 10px 16px;
   background: var(--glass-bg);
   backdrop-filter: blur(20px);
   border-top: 1px solid var(--glass-border);
-}
-
-/* ===== 搜索状态 ===== */
-.search-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  margin-bottom: 12px;
-  background: rgba(56, 189, 248, 0.1);
-  border: 1px solid rgba(56, 189, 248, 0.3);
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--accent-sky);
-  max-width: 1200px;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-.search-status.search-enabled {
-  background: rgba(56, 189, 248, 0.05);
-  border-color: rgba(56, 189, 248, 0.2);
-}
-
-.search-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(56, 189, 248, 0.3);
-  border-top-color: var(--accent-sky);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  flex-shrink: 0;
 }
 
 .input-container {
   display: flex;
-  gap: 12px;
+  gap: 8px;
+  align-items: center;
   max-width: 1200px;
   margin: 0 auto;
 }
@@ -884,14 +1137,14 @@ function getPanelColor(index: number) {
 .input-area textarea {
   flex: 1;
   resize: none;
-  padding: 14px 18px;
+  padding: 10px 14px;
   border: 1px solid var(--border-color);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-size: 14px;
   font-family: var(--font-sans);
-  line-height: 1.6;
+  line-height: 1.5;
   transition: all 0.2s ease;
 }
 
@@ -915,15 +1168,15 @@ function getPanelColor(index: number) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 14px 24px;
+  padding: 10px 20px;
   background: var(--gradient-primary);
   border: none;
-  border-radius: 12px;
+  border-radius: 10px;
   color: white;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
-  min-width: 100px;
+  min-width: 60px;
 }
 
 .btn-send:hover:not(:disabled) {
@@ -946,5 +1199,137 @@ function getPanelColor(index: number) {
 .send-text {
   font-size: 11px;
   margin-top: 2px;
+}
+
+/* ===== 设置按钮 ===== */
+.btn-settings {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-settings:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-hover);
+}
+
+/* ===== 搜索按钮组 ===== */
+.search-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-search-icon {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  opacity: 0.6;
+}
+
+.btn-search-icon:hover {
+  opacity: 1;
+  border-color: var(--accent-sky);
+}
+
+.btn-search-icon.active {
+  opacity: 1;
+  background: rgba(56, 189, 248, 0.15);
+  border-color: var(--accent-sky);
+  color: var(--accent-sky);
+}
+
+.search-select {
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12px;
+  max-width: 100px;
+}
+
+/* ===== 设置弹窗 ===== */
+.settings-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.settings-modal {
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  background: var(--bg-primary);
+  border-radius: 16px;
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.btn-close-modal {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-close-modal:hover {
+  background: rgba(244, 63, 94, 0.1);
+  border-color: #f43f5e;
+  color: #f43f5e;
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.settings-content > * {
+  height: 100%;
 }
 </style>

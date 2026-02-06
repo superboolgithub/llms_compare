@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Message, ModelSelection, ComparePanel } from '../types/config'
+import type { Message, ModelSelection, ComparePanel, TempApiConfig } from '../types/config'
 
 // 聊天状态 store - 用于保持对话状态
 export const useChatStore = defineStore('chat', () => {
@@ -67,11 +67,30 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  // 设置临时 API 配置
+  function setComparePanelTempApi(panelId: string, tempApi: TempApiConfig) {
+    const panel = comparePanels.value.find(p => p.id === panelId)
+    if (panel) {
+      panel.tempApi = tempApi
+      panel.selection = null  // 清除已选模型
+    }
+  }
+
+  // 清除临时 API 配置
+  function clearComparePanelTempApi(panelId: string) {
+    const panel = comparePanels.value.find(p => p.id === panelId)
+    if (panel) {
+      panel.tempApi = undefined
+    }
+  }
+
   return {
     comparePanels,
     addComparePanel,
     removeComparePanel,
     setComparePanelSelection,
+    setComparePanelTempApi,
+    clearComparePanelTempApi,
     addComparePanelMessage,
     updateComparePanelLastMessage,
     setComparePanelStreaming,
