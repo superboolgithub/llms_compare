@@ -151,7 +151,7 @@ async function performSearch(query: string): Promise<SearchResult[]> {
         maxResults: 5,
         username: searchService.username,
         password: searchService.apiKey,
-        proxyUrl: searchService.proxyUrl
+        proxyApiKey: searchService.proxyApiKey
       })
     } else {
       return []
