@@ -95,6 +95,7 @@ export async function searxngSearch(
     maxResults?: number
     username?: string
     password?: string
+    proxyApiKey?: string
   }
 ): Promise<SearchResponse> {
   // 确保 baseUrl 有协议前缀
@@ -107,6 +108,11 @@ export async function searxngSearch(
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
+  }
+
+  // 添加 API Key（用于 Caddy 代理验证）
+  if (options?.proxyApiKey) {
+    headers['X-API-Key'] = options.proxyApiKey
   }
 
   // 添加 Basic Auth
