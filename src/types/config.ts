@@ -30,7 +30,6 @@ export interface SearchService {
   type: 'tavily' | 'serpapi' | 'searxng'
   apiKey: string           // Tavily/SerpAPI 的 API Key，SearXNG 的 Basic Auth 密码
   baseUrl?: string         // SearXNG 的服务地址
-  proxyApiKey?: string     // Caddy 代理的 API Key（仅 SearXNG 使用）
   username?: string        // SearXNG 的 Basic Auth 用户名
   enabled: boolean
 }

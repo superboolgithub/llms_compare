@@ -95,8 +95,6 @@ export async function searxngSearch(
     maxResults?: number
     username?: string
     password?: string
-    proxyUrl?: string  // CORS 代理地址
-    apiKey?: string    // Caddy API Key
   }
 ): Promise<SearchResponse> {
   // 确保 baseUrl 有协议前缀
@@ -105,26 +103,10 @@ export async function searxngSearch(
     normalizedUrl = `https://${normalizedUrl}`
   }
 
-  // 构建请求 URL
-  let fetchUrl: string
-  if (import.meta.env.DEV && normalizedUrl.includes('railwaysearxng-production.up.railway.app')) {
-    // 开发环境使用 Vite 代理
-    fetchUrl = `/api/searxng/search?q=${encodeURIComponent(query)}&format=json`
-  } else if (!import.meta.env.DEV && normalizedUrl.includes('railwaysearxng-production.up.railway.app')) {
-    // 生产环境使用 Caddy 代理
-    fetchUrl = `https://railway-caddy-production.up.railway.app/search?q=${encodeURIComponent(query)}&format=json`
-  } else {
-    // 直接请求
-    fetchUrl = `${normalizedUrl}/search?q=${encodeURIComponent(query)}&format=json`
-  }
+  const fetchUrl = `${normalizedUrl}/search?q=${encodeURIComponent(query)}&format=json`
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
-  }
-
-  // 添加 API Key（用于 Caddy 代理验证）
-  if (options?.apiKey) {
-    headers['X-API-Key'] = options.apiKey
   }
 
   // 添加 Basic Auth

@@ -19,8 +19,7 @@ const newSearchService = ref({
   type: 'tavily' as SearchService['type'],
   apiKey: '',
   baseUrl: '',
-  username: '',
-  proxyApiKey: ''
+  username: ''
 })
 
 // 编辑状态
@@ -34,7 +33,6 @@ const editingSearchService = ref<{
   apiKey: string
   baseUrl: string
   username: string
-  proxyApiKey: string
 } | null>(null)
 
 // 导入导出
@@ -200,8 +198,7 @@ function startEditSearchService(service: SearchService) {
     type: service.type,
     apiKey: service.apiKey,
     baseUrl: service.baseUrl || '',
-    username: service.username || '',
-    proxyApiKey: service.proxyApiKey || ''
+    username: service.username || ''
   }
 }
 
@@ -216,8 +213,7 @@ function saveEditSearchService() {
       type: editingSearchService.value.type,
       apiKey: editingSearchService.value.apiKey,
       baseUrl: editingSearchService.value.baseUrl || undefined,
-      username: editingSearchService.value.username || undefined,
-      proxyApiKey: editingSearchService.value.proxyApiKey || undefined
+      username: editingSearchService.value.username || undefined
     })
     editingSearchService.value = null
   }
@@ -532,12 +528,6 @@ function maskKey(key: string): string {
                   v-model="editingSearchService.baseUrl"
                   placeholder="服务地址"
                   class="input-sm input-url"
-                />
-                <input
-                  v-model="editingSearchService.proxyApiKey"
-                  placeholder="代理API Key (可选)"
-                  type="password"
-                  class="input-sm"
                 />
                 <input
                   v-model="editingSearchService.username"
