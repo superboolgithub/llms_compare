@@ -20,7 +20,7 @@ const newSearchService = ref({
   apiKey: '',
   baseUrl: '',
   username: '',
-  proxyUrl: ''
+  proxyApiKey: ''
 })
 
 // 编辑状态
@@ -34,7 +34,7 @@ const editingSearchService = ref<{
   apiKey: string
   baseUrl: string
   username: string
-  proxyUrl: string
+  proxyApiKey: string
 } | null>(null)
 
 // 导入导出
@@ -201,7 +201,7 @@ function startEditSearchService(service: SearchService) {
     apiKey: service.apiKey,
     baseUrl: service.baseUrl || '',
     username: service.username || '',
-    proxyUrl: service.proxyUrl || ''
+    proxyApiKey: service.proxyApiKey || ''
   }
 }
 
@@ -217,7 +217,7 @@ function saveEditSearchService() {
       apiKey: editingSearchService.value.apiKey,
       baseUrl: editingSearchService.value.baseUrl || undefined,
       username: editingSearchService.value.username || undefined,
-      proxyUrl: editingSearchService.value.proxyUrl || undefined
+      proxyApiKey: editingSearchService.value.proxyApiKey || undefined
     })
     editingSearchService.value = null
   }
@@ -534,9 +534,10 @@ function maskKey(key: string): string {
                   class="input-sm input-url"
                 />
                 <input
-                  v-model="editingSearchService.proxyUrl"
-                  placeholder="CORS代理 (可选)"
-                  class="input-sm input-url"
+                  v-model="editingSearchService.proxyApiKey"
+                  placeholder="代理API Key (可选)"
+                  type="password"
+                  class="input-sm"
                 />
                 <input
                   v-model="editingSearchService.username"

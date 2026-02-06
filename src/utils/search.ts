@@ -107,13 +107,12 @@ export async function searxngSearch(
 
   // 构建请求 URL
   let fetchUrl: string
-  if (options?.proxyUrl) {
-    // 使用 CORS 代理（生产环境）
-    const proxyBase = options.proxyUrl.replace(/\/$/, '')
-    fetchUrl = `${proxyBase}/search?q=${encodeURIComponent(query)}&format=json`
-  } else if (import.meta.env.DEV && normalizedUrl.includes('railwaysearxng-production.up.railway.app')) {
+  if (import.meta.env.DEV && normalizedUrl.includes('railwaysearxng-production.up.railway.app')) {
     // 开发环境使用 Vite 代理
     fetchUrl = `/api/searxng/search?q=${encodeURIComponent(query)}&format=json`
+  } else if (!import.meta.env.DEV && normalizedUrl.includes('railwaysearxng-production.up.railway.app')) {
+    // 生产环境使用 Caddy 代理
+    fetchUrl = `https://railway-caddy-production.up.railway.app/search?q=${encodeURIComponent(query)}&format=json`
   } else {
     // 直接请求
     fetchUrl = `${normalizedUrl}/search?q=${encodeURIComponent(query)}&format=json`
