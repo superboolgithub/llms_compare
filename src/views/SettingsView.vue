@@ -125,14 +125,14 @@ function addSearchService() {
       newSearchService.value.apiKey || '',
       newSearchService.value.baseUrl || undefined
     )
-    // 如果是 SearXNG，还需要设置 username 和 proxyUrl
+    // 如果是 SearXNG，还需要设置 username 和 proxyApiKey
     if (isSearxng) {
       configStore.updateSearchService(service.id, {
         username: newSearchService.value.username || undefined,
-        proxyUrl: newSearchService.value.proxyUrl || undefined
+        proxyApiKey: newSearchService.value.proxyApiKey || undefined
       })
     }
-    newSearchService.value = { name: '', type: 'tavily', apiKey: '', baseUrl: '', username: '', proxyUrl: '' }
+    newSearchService.value = { name: '', type: 'tavily', apiKey: '', baseUrl: '', username: '', proxyApiKey: '' }
   }
 }
 
@@ -487,7 +487,7 @@ function maskKey(key: string): string {
         <!-- SearXNG 特有字段 -->
         <template v-if="newSearchService.type === 'searxng'">
           <input v-model="newSearchService.baseUrl" placeholder="服务地址 (如: https://xxx.up.railway.app)" class="input-url" />
-          <input v-model="newSearchService.proxyUrl" placeholder="CORS代理 (可选，生产环境用)" class="input-url" />
+          <input v-model="newSearchService.proxyApiKey" placeholder="API Key (可选)" type="password" class="input-sm" />
           <input v-model="newSearchService.username" placeholder="用户名 (可选)" class="input-sm" />
           <input v-model="newSearchService.apiKey" placeholder="密码 (可选)" type="password" class="input-sm" />
         </template>
